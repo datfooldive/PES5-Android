@@ -6,6 +6,7 @@
 
 #include "app/app.h"
 #include "core/log.h"
+#include "game_files.h"
 #include "host.h"
 #include "image_symbols.h"
 #include "kernel/crypto.h"
@@ -21,9 +22,10 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// where a player's copy is looked for: a PES5 folder at the top of the phone's storage and of each card, the app's
-// own files folder, and the internal one
-std::vector<fs::path> Candidates() {
+// where a player's copy is looked for: a PES5 folder at the top of the phone's storage and of each card, and the
+// app's own assets folder. The caller passes that last one, so this never needs SDL: the game gives ExeDir()/assets,
+// the launcher gives the files dir Android handed it, before SDL is up.
+std::vector<fs::path> Candidates(const fs::path& own_assets) {
     std::vector<fs::path> out = {
         "/storage/emulated/0/PES5",
         "/storage/emulated/0/Android/data/com.datfooldive.pes5/files/assets",
@@ -33,7 +35,7 @@ std::vector<fs::path> Candidates() {
     for (auto& e : fs::directory_iterator("/storage", ec))
         if (e.is_directory(ec) && e.path().filename() != "emulated" && e.path().filename() != "self")
             out.push_back(e.path() / "PES5");
-    out.push_back(ExeDir() / "assets");
+    out.push_back(own_assets);
     return out;
 }
 
@@ -84,8 +86,40 @@ std::string Sha1(const std::vector<uint8_t>& data) {
     return hex;
 }
 
+// The same scan FindGame does, read-only: the extracted files are preferred over an image, this build's xbe over a
+// different release's. It never mounts a disc or writes a global, so the launcher can ask before the game starts.
+ProbeResult ProbeGame(const std::filesystem::path& own_assets) {
+    std::vector<fs::path> dirs = Candidates(own_assets);
+    std::sort(dirs.begin(), dirs.end());
+    dirs.erase(std::unique(dirs.begin(), dirs.end()), dirs.end());
+
+    fs::path wrong;  // the first copy of another release, offered only if nothing here matches
+    for (const fs::path& dir : dirs) {
+        std::error_code ec;
+        if (!fs::is_directory(dir, ec) || !Extracted(dir)) continue;
+        std::vector<uint8_t> xbe;
+        if (!ReadHostFile(dir / IMAGE_XBE, xbe)) continue;
+        if (Sha1(xbe) == kImageSha1) return {Probe::Extracted, dir};
+        if (wrong.empty()) wrong = dir;
+    }
+    for (const fs::path& dir : dirs) {
+        std::error_code ec;
+        if (!fs::is_directory(dir, ec)) continue;
+        fs::path iso;
+        if (!HasIso(dir, iso)) continue;
+        kernel::Disc disc;
+        std::string error;
+        std::vector<uint8_t> xbe;
+        if (!disc.Open(iso, error) || !disc.Load(IMAGE_XBE, xbe)) continue;
+        if (Sha1(xbe) == kImageSha1) return {Probe::Iso, iso};
+        if (wrong.empty()) wrong = iso;
+    }
+    if (!wrong.empty()) return {Probe::WrongRelease, wrong};
+    return {Probe::NotFound, {}};
+}
+
 bool FindGame(GameFiles& game) {
-    std::vector<fs::path> dirs = Candidates();
+    std::vector<fs::path> dirs = Candidates(ExeDir() / "assets");
     std::sort(dirs.begin(), dirs.end());
     dirs.erase(std::unique(dirs.begin(), dirs.end()), dirs.end());
 

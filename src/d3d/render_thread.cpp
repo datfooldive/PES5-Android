@@ -434,6 +434,16 @@ private:
     void PlanNextFrame() {
         constexpr int kMaxSkips = 2;
         auto now = Clock::now();
+        // the 30 FPS lock: the game runs full speed (paced to 60 in app::Pace) and this draws every other frame, so the
+        // picture is 30 without the title slowing to half speed as it would if the game itself were held to 30
+        if (game::Opt().frame_rate == 1) {
+            frame_busy_ms_ = 0;
+            batch_start_ = now;
+            late_ms_ = 0;
+            skips_ = 0;
+            skipping_ = !skipping_;  // draw, skip, draw, skip
+            return;
+        }
         uint32_t cap = game::FrameCap(app::Get().fps_cap) ? game::FrameCap(app::Get().fps_cap) : 60;
         double budget = 1000.0 / cap;
         // the work since the last present: the batches finished since, and this one so far

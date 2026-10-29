@@ -1,20 +1,13 @@
 package com.datfooldive.pes5;
 
-import android.Manifest;
-import android.app.AlertDialog;
-import android.content.ActivityNotFoundException;
-import android.content.Intent;
-import android.content.pm.PackageManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
-import android.provider.Settings;
 import android.view.InputDevice;
 import android.view.InputEvent;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -26,18 +19,15 @@ import java.io.File;
 import org.libsdl.app.SDLActivity;
 import org.libsdl.app.SDLControllerManager;
 
-// SDL's activity running libmain.so. The game goes in a PES5 folder on the phone's storage
-// (/storage/emulated/0/PES5) or at the top of an SD card. Reading it needs all files access, a special access Android
-// grants on a settings page of its own, never among the app's ordinary permissions. This asks for it, and says where
-// the game goes, each time the app comes back without them; the game itself waits and starts as soon as it finds the
-// files.
+// SDL's activity running libmain.so: the game itself. LauncherActivity is the app's entry and gates this one, so by
+// the time it starts storage access is granted and the game's files (a PES5 folder on the phone's storage or an SD
+// card) are known to be there. This activity is the running game: the on-screen controls (TouchControls, a view over
+// the game's surface), the loose-controller input, the toasts and the in-game settings panel; it is never the app's
+// launcher.
 public class PES5Activity extends SDLActivity {
-    static final String SHARED = "PES5";
-
     private static PES5Activity current;  // for the toasts the game's threads ask for
-    private AlertDialog dialog;
     private SettingsDialog settings;
-    private boolean notNow;  // the player turned the access down this run
+    private TouchControls controls;
 
     @Override
     protected String[] getLibraries() {
@@ -49,6 +39,12 @@ public class PES5Activity extends SDLActivity {
         super.onCreate(savedInstanceState);
         current = this;
         fillDisplay();
+        // the controls over the game's surface, taking every touch on it
+        if (mLayout != null) {
+            controls = new TouchControls(this);
+            mLayout.addView(controls, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        }
         File own = getExternalFilesDir(null);
         if (own != null) new File(own, "assets").mkdirs();
     }
@@ -83,32 +79,46 @@ public class PES5Activity extends SDLActivity {
     static native String[] nativeCheats();
     static native void nativeCheat(int index);
     static native boolean nativeCheatsAvailable();
-    static native void nativeEditLayout();
-    static native void nativeEditEnd();
-    static native void nativeEditReset();
 
     private LayoutEditor editor;
 
     // the panel's MOVE CONTROLS: it closes, the controls stay drawn where they are and a finger moves them; the bar
-    // this puts at the bottom of the screen is the editor's Done and Reset
+    // this puts at the bottom of the screen is the editor's size bar, Done and Reset
     public void beginLayoutEdit() {
-        nativeEditLayout();
-        if (editor == null) editor = new LayoutEditor(this);
+        if (controls == null) return;
+        if (editor == null) editor = new LayoutEditor(this, controls);
         editor.show();
+        controls.beginEdit(editor);
         hideSystemBars();
     }
 
-    // the gear (native/touch.cpp): the settings panel over the game, which keeps running behind it
-    public void showSettings() {
-        runOnUiThread(() -> {
-            if (settings != null && settings.isShowing()) return;
-            settings = new SettingsDialog(this);
-            settings.setOnDismissListener(d -> {
-                settings = null;
-                hideSystemBars();
-            });
-            settings.show();
+    // the gear (TouchControls): the settings panel over the game, which keeps running behind it
+    void showSettings() {
+        if (settings != null && settings.isShowing()) return;
+        settings = new SettingsDialog(this);
+        settings.setOnDismissListener(d -> {
+            settings = null;
             hideSystemBars();
+        });
+        settings.show();
+        hideSystemBars();
+    }
+
+    // a value in the panel changed: the controls read their opacity and right stick from it, the layout with DEFAULTS
+    void settingsChanged() {
+        if (controls == null) return;
+        controls.reloadSettings();
+        controls.reloadLayout();
+    }
+
+    // native/touch.cpp, from the game's thread: the settings file is loaded (the controls were made before it was, and
+    // read the layout and the panel's values again now), or a controller came or went
+    public void controlsSync(boolean pad) {
+        runOnUiThread(() -> {
+            if (controls == null) return;
+            controls.reloadLayout();
+            controls.reloadSettings();
+            controls.setPad(pad);
         });
     }
 
@@ -145,12 +155,12 @@ public class PES5Activity extends SDLActivity {
     protected void onResume() {
         super.onResume();
         hideSystemBars();
-        askForGame();
     }
 
     @Override
     protected void onPause() {
         nativeLooseRelease();  // its ups go elsewhere while the game is not in front
+        if (controls != null) controls.releaseAll();
         super.onPause();
     }
 
@@ -207,92 +217,4 @@ public class PES5Activity extends SDLActivity {
         c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
     }
 
-    private static final boolean ALL_FILES_ACCESS = Build.VERSION.SDK_INT >= 30;
-    private static final int STORAGE_REQUEST = 0x4457;
-    private boolean storageAsked;
-
-    private boolean hasStorageAccess() {
-        if (ALL_FILES_ACCESS) return Environment.isExternalStorageManager();
-        return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
-    }
-
-    private void askForGame() {
-        if (dialog != null && dialog.isShowing()) return;
-        File own = getExternalFilesDir(null);
-        if (own != null && hasGame(new File(own, "assets"))) return;
-        if (!hasStorageAccess()) {
-            if (!notNow) askAllFilesAccess();
-            return;
-        }
-        File shared = new File(Environment.getExternalStorageDirectory(), SHARED);
-        shared.mkdirs();
-        if (hasGame(shared) || hasGame(new File(shared, "assets"))) return;
-        tellWhereTheGameGoes();
-    }
-
-    // a disc image in the folder, or default.xbe with the game's data beside it, as native/game_files.cpp looks for them
-    private static boolean hasGame(File dir) {
-        File[] files = dir.listFiles();
-        if (files == null) return false;
-        boolean data = false;
-        for (File f : files) {
-            String name = f.getName().toLowerCase();
-            if (name.endsWith(".iso")) return true;
-            if (!name.endsWith(".xbe")) data = true;
-        }
-        return data && new File(dir, "default.xbe").exists();
-    }
-
-    private void askAllFilesAccess() {
-        dialog = new AlertDialog.Builder(this)
-                .setTitle("Storage access")
-                .setMessage("PES5 Android reads the game from a PES5 folder on your phone's storage:\n\n"
-                        + "/storage/emulated/0/" + SHARED + "\n\n"
-                        + (ALL_FILES_ACCESS
-                                ? "On the next screen turn on \"Allow access to manage all files\" for PES5 Android, then come back."
-                                : "Allow PES5 Android to access your storage on the next screen."))
-                .setCancelable(false)
-                .setPositiveButton("Allow access", (d, w) -> openAccessSettings())
-                .setNegativeButton("Not now", (d, w) -> notNow = true)
-                .show();
-    }
-
-    private void tellWhereTheGameGoes() {
-        dialog = new AlertDialog.Builder(this)
-                .setTitle("Game files")
-                .setMessage("Copy the game into a PES5 folder on your phone's storage:\n\n"
-                        + "/storage/emulated/0/" + SHARED + "\n\n"
-                        + "or into a PES5 folder at the top of your SD card.\n\n"
-                        + "Its disc image (.iso), or default.xbe with its data files beside it. The game starts as soon "
-                        + "as they are there.")
-                .setPositiveButton("OK", null)
-                .show();
-    }
-
-    private void openAccessSettings() {
-        if (!ALL_FILES_ACCESS) {
-            boolean ask = !storageAsked || shouldShowRequestPermissionRationale(Manifest.permission.READ_EXTERNAL_STORAGE);
-            if (ask) {
-                storageAsked = true;
-                requestPermissions(new String[] {Manifest.permission.READ_EXTERNAL_STORAGE,
-                        Manifest.permission.WRITE_EXTERNAL_STORAGE}, STORAGE_REQUEST);
-            } else {
-                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + getPackageName())));
-            }
-            return;
-        }
-        try {
-            startActivity(new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                    Uri.parse("package:" + getPackageName())));
-        } catch (ActivityNotFoundException e) {
-            try {
-                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
-            } catch (ActivityNotFoundException e2) {
-                startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:" + getPackageName())));
-            }
-        }
-    }
 }

@@ -14,9 +14,10 @@ void InstallCaptureSignal();
 void PadHook(int port, input::Pad& p);
 
 void Init() { InstallCaptureSignal(); }
-// the on-screen controls, the frame rate in the top left corner above LT, and the settings panel
+// the frame rate in the top left corner above LT; the on-screen controls are the activity's overlay, told here when a
+// controller comes or goes
 void Ui(double fps) {
-    touch::Draw();
+    touch::Frame();
     if (!game::Opt().fps_counter) return;
     ImGuiIO& io = ImGui::GetIO();
     float size = std::max(io.DisplaySize.y * 0.03f, 12.0f);
@@ -54,9 +55,9 @@ const app::GameInfo app::kGame = {
                 {"smaa", &game::Opt().smaa, nullptr},
                 {"fps_counter", &game::Opt().fps_counter, nullptr},
                 {"frame_skip", &game::Opt().frame_skip, nullptr},
+                {"shadow_quality", nullptr, &game::Opt().shadow_quality},
                 {"aspect", nullptr, &game::Opt().aspect},
                 {"controls_opacity", nullptr, &game::Opt().controls_opacity},
-                {"controls_scale", nullptr, &game::Opt().controls_scale},
                 {"camera_sensitivity", nullptr, &game::Opt().camera_sensitivity},
                 {"camera_mode", nullptr, &game::Opt().camera_mode},
                 {"frame_rate", nullptr, &game::Opt().frame_rate},

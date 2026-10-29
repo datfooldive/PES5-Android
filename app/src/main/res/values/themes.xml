@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- the launcher is a normal portrait app on the default Material dark theme; the game keeps its own fullscreen theme -->
+    <style name="Theme.Launcher" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:colorAccent">#2196F3</item>
+        <item name="android:windowBackground">#121212</item>
+        <item name="android:statusBarColor">#121212</item>
+        <item name="android:navigationBarColor">#121212</item>
+    </style>
+</resources>

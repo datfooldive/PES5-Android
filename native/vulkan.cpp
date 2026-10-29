@@ -1083,6 +1083,7 @@ private:
     VkPipeline CreatePassPipeline(const PassPipe& p);
     bool BindTargets(const State& s);
     bool DepthCopy(const State& s);
+    bool ShadowSkipped(const State& s);
     bool DepthPass(Image* src, Image* dst, uint32_t w, uint32_t h);
     VkPipeline EnsureDepthCopyPipeline(bool ms, uint32_t samples);
     // one full screen pass of kAoHlsl
@@ -1265,6 +1266,7 @@ private:
     VmaAllocator vma_ = nullptr;
     VkSurfaceKHR surface_ = VK_NULL_HANDLE;
     VkSwapchainKHR swap_ = VK_NULL_HANDLE;
+    VkSwapchainKHR old_swap_ = VK_NULL_HANDLE;  // the retired chain, kept over the handover so the screen does not blank
     std::vector<ImageRef> bb_;
     std::vector<VkSemaphore> rendered_;  // per swap chain image: its frame's commands are done
     VkFormat swap_fmt_ = kBgra;
@@ -1337,6 +1339,8 @@ private:
     VkPipeline last_pso_ = VK_NULL_HANDLE;
     std::unordered_map<uint64_t, VkSampler> samplers_;
     std::unordered_map<uint64_t, Target> targets_;
+    bool shadow_frame_ = false;  // this frame has drawn a player's shadow, so the blobs under the feet follow
+    uint32_t shadow_light_ = 0;  // the light the next of a player's shadows is cast by, 0 the first
     std::unordered_map<uint64_t, Tex> textures_;  // by data address, a P8 texture's with its palette's above
     std::unordered_map<uint64_t, VkPipeline> blit_psos_;
     ImageRef dummy_[3];  // what a stage without a texture reads: 2D, 3D, cube
@@ -4252,6 +4256,7 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     g_perf.draws++;
     if (cap_) CapStep(s.rt);
     if (DepthCopy(s)) return;
+    if (game::Opt().shadow_quality < game::kShadowHigh && ShadowSkipped(s)) return;
     Assembled& a = asm_;
     if (!AssembleDraw(s, prim, start, count, indices, a)) return;
     if (!BindTargets(s)) return;
@@ -4304,6 +4309,28 @@ void VulkanBackend::Draw(const State& s, uint32_t prim, uint32_t start, uint32_t
     DrawGeometry(a);
 }
 
+// PES5's shadows on the pitch, as a frame of a match draws them: each player's body flattened onto the ground once
+// for each stadium light (a programmable vertex shader over a 1x1 texture, its alpha the texture factor's, blended
+// without writing depth), and a soft blob under the feet (a world space quad, FVF XYZ | DIFFUSE | TEX1, its texture
+// times the texture factor at the same faint alpha). Nothing else in a match draws a 1x1 texture that way. A player's
+// lights come one after another, so any other draw ends the run. The quality leaves out what it does not keep: medium
+// one light a player, low the blob alone, off both.
+bool VulkanBackend::ShadowSkipped(const State& s) {
+    constexpr uint32_t kFvfBlob = 0x142;
+    constexpr uint32_t kD3dtopModulate = 4, kD3dtaTfactor = 3;
+    const uint32_t quality = game::Opt().shadow_quality;
+    bool faint = SimpleState(s, kMBlendEnable) && !SimpleState(s, kMZWriteEnable) && s.textures[0];
+    TextureDesc d;
+    if (faint && (s.vs_handle & 1) && Describe(s.textures[0], d) && d.width == 1 && d.height == 1) {
+        shadow_frame_ = true;
+        return quality < game::kShadowMedium || shadow_light_++ > 0;
+    }
+    shadow_light_ = 0;
+    const auto& t = s.tss[0];
+    bool blob = faint && shadow_frame_ && s.vs_handle == kFvfBlob && t[kTssColorOp] == kD3dtopModulate &&
+                t[kTssColorArg2] == kD3dtaTfactor && (s.rs[kRsTextureFactor] >> 24) < 0x80;
+    return blob && quality == game::kShadowOff;
+}
 
 // a guest rect scaled to the target and clamped to it
 VkClearRect ScaledRect(const Target& t, int x0, int y0, int x1, int y1) {
@@ -4705,7 +4732,11 @@ bool VulkanBackend::CreateSwapchain(uint32_t w, uint32_t h, bool hdr) {
     VkSwapchainKHR swap = VK_NULL_HANDLE;
     VkResult r = vkCreateSwapchainKHR(dev_, &ci, nullptr, &swap);
     DestroySwapchainImages();
-    if (swap_) vkDestroySwapchainKHR(dev_, swap_, nullptr);
+    // Keep the chain we just retired alive until the new one has shown a frame: destroying it now, before the new
+    // chain presents, blanks the surface for a frame and flickers (seen when V-Sync is toggled). The previously
+    // retired chain is long unused by here (ResizeSwap waits for the GPU before each rebuild), so free that one.
+    if (old_swap_) vkDestroySwapchainKHR(dev_, old_swap_, nullptr);
+    old_swap_ = swap_;
     swap_ = swap;
     if (r != VK_SUCCESS) {
         if (r == VK_ERROR_SURFACE_LOST_KHR || r == VK_ERROR_NATIVE_WINDOW_IN_USE_KHR) surface_lost_ = true;
@@ -4786,6 +4817,9 @@ bool VulkanBackend::EnsureSurface() {
         DestroySwapchainImages();
         if (swap_) vkDestroySwapchainKHR(dev_, swap_, nullptr);
         swap_ = VK_NULL_HANDLE;
+        // the retired chain belongs to the surface going away: it cannot outlive it
+        if (old_swap_) vkDestroySwapchainKHR(dev_, old_swap_, nullptr);
+        old_swap_ = VK_NULL_HANDLE;
         vkDestroySurfaceKHR(instance_, surface_, nullptr);
         surface_ = VK_NULL_HANDLE;
     }
@@ -4797,6 +4831,10 @@ bool VulkanBackend::EnsureSurface() {
 void VulkanBackend::ResizeSwap() {
     if (!EnsureSurface()) return;
     app::Mode px = app::WindowPixels();
+    // Coming back from the background Android hands the window back at 1 px or portrait for a moment before it settles
+    // to the real landscape size. A swap chain built at that transient size is the wrong shape and is torn down and
+    // rebuilt as soon as the real size arrives, which flickers. Wait for a landscape size; the last frame stays up.
+    if (px.width <= 1 || px.height <= 1 || px.width < px.height) return;
     bool hdr = hdr_display_ && game::Opt().hdr_output;
     bool vsync = app::Get().vsync;
     bool same = px.width == bb_w_ && px.height == bb_h_ && hdr == hdr_want_ && vsync == vsync_;
@@ -5262,6 +5300,8 @@ void VulkanBackend::Present(const Surface& front) {
     // the activity is behind another app: hold the frame until it is in front, so the swapchain is not touched
     while (!host::Foreground()) std::this_thread::sleep_for(std::chrono::milliseconds(50));
     PerfScope perf_present{g_perf.present};
+    shadow_frame_ = false;
+    shadow_light_ = 0;
     if (cap_) {
         FinishCapture(front);
     } else if (g_capture.exchange(false) && CaptureOn()) {

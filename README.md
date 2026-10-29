@@ -53,12 +53,15 @@ and plays port 1 all the same (`native/loose.cpp`). A keyboard works as port 1's
 
 The on-screen controls are the Xbox pad's, where the pad has them: the left stick, the **A B X Y** diamond, White and
 Black above it, the triggers, the stick clicks, the D-pad, START and BACK, and the right stick under a finger on the
-right. They are thin rings over a see-through dark backing, so the pitch shows through while the icons stay readable on
-light grass and kits. Each face button carries a line icon for what it does with the ball (A short pass, B lofted pass
-or cross, X shot, Y through ball, as the title maps the pad onto the PS2 game's Cross, Circle, Square and Triangle) and
-the pad's letter on a badge in its colour; LT (change player) and RT (sprint) carry icons beside their names. The icons
-are `native/ui/*.svg`, flattened into `native/ui_paths.h` by `tools/ui_paths.py`. The **gear**, top middle, opens the
-settings panel; **Move controls** in it places each control.
+right. They are thin light outlines with next to no backing, so the pitch shows through, as a native mobile game's
+are. Each face button carries a white icon for what it does with the ball (A short pass, B lofted pass or cross, X shot,
+Y through ball, as the title maps the pad onto the PS2 game's Cross, Circle, Square and Triangle) and the pad's letter on
+a small badge on its top edge; LT (change player) and RT (sprint) are round as the face buttons, a size smaller, with their names on
+the badge, and START, BACK and the stick clicks small round buttons. They are an Android view over the game
+(`TouchControls.java`) that draws each control from an image, normal and held (`res/drawable-nodpi/ctl_*.png`, made by
+`tools/controls_art.py` from the icons in `art/icons/`), and sends what the fingers hold to the game over JNI
+(`native/touch.cpp`): the game's thread draws nothing for them. The **gear**, top middle, opens the
+settings panel; **Move controls** in it places each control, and a size bar there sizes the one last taken, 50 to 150%.
 
 ## Settings
 
@@ -66,7 +69,7 @@ The gear opens the settings panel, the activity's own (`SettingsDialog.java`), o
 it, in tabs: Graphics, Performance, Display and Controls. A value is applied as it changes and written to
 `settings.toml` (`native/settings_bridge.cpp`): render resolution, anti-aliasing (SMAA, MSAA), anisotropic filtering,
 vertical sync, frame skip, a 30 FPS lock, the aspect ratio, the match camera's height and distance, the FPS counter,
-HDR, and the on-screen controls' size, opacity, right stick mode and sensitivity.
+HDR, and the on-screen controls' opacity, right stick mode and sensitivity.
 
 The camera height and distance (`src/game/camera.cpp`) scale the eye's offset in the title's table of match camera
 types, which only the cameras of play read: the distance moves the camera back or in along its line of sight, keeping
@@ -96,7 +99,7 @@ a small one.
 
 | path | |
 | --- | --- |
-| `native/` | the Android host: `main.cpp` (SDL window, event loop, lifecycle, pacing), `vulkan.cpp` (the Vulkan 1.1+ backend), `vk_shader.cpp` (HLSL to SPIR-V with glslang), `touch.cpp` (the on-screen controls and their layout editor), `settings_bridge.cpp` (the settings panel's values over JNI), `loose.cpp`, `game_files.cpp`, `system_info.cpp` |
+| `native/` | the Android host: `main.cpp` (SDL window, event loop, lifecycle, pacing), `vulkan.cpp` (the Vulkan 1.1+ backend), `vk_shader.cpp` (HLSL to SPIR-V with glslang), `touch.cpp` (what the on-screen controls hold, and their layout in the settings file), `settings_bridge.cpp` (the settings panel's and the controls' JNI), `loose.cpp`, `game_files.cpp`, `system_info.cpp` |
 | `src/` | the game's host code, shared with the Linux port, with the Android options, FPS counter and touch input; `src/d3d/render_thread.cpp` is the Android render thread (NEON, frame skip) |
 | `sdk/` | XboxXBERecomp as the Linux port has it, with the Android runtime changes (logcat, arm64, the dispatch level lock, `kTexShift`) |
 | `config/game.toml` | recompiler input, the Linux port's |

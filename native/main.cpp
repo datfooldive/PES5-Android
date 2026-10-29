@@ -211,12 +211,6 @@ void Handle(const SDL_Event& e) {
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
             UpdateSizes();
             break;
-        case SDL_EVENT_FINGER_DOWN:
-        case SDL_EVENT_FINGER_MOTION:
-        case SDL_EVENT_FINGER_UP:
-        case SDL_EVENT_FINGER_CANCELED:
-            touch::Event(e);
-            break;
         case SDL_EVENT_WINDOW_FOCUS_LOST:
             break;
         default:
@@ -405,8 +399,11 @@ uint32_t RefreshRate() {
 void Pace() {
     using clock = std::chrono::steady_clock;
     static clock::time_point next = clock::now();
-    uint32_t cap = Get().fps_cap == kFpsCapRefresh && game::Opt().frame_rate == 0 ? kFpsCapRefresh
-                                                                                  : game::FrameCap(Get().fps_cap);
+    // The game simulates one step per frame and counts on 60 a second, so the simulation is always paced to the file's
+    // cap (60, or the refresh rate), never to the 30 FPS lock: at 30 that would run the title at half speed. The 30 FPS
+    // lock instead drops every other drawn frame in the render thread, so the picture is 30 while the game stays full
+    // speed.
+    uint32_t cap = Get().fps_cap;
     // a few under the refresh rate, so a variable refresh display stays in its range and vsync never waits a whole
     // refresh
     constexpr uint32_t kRefreshMargin = 3;

@@ -27,17 +27,27 @@
         <!-- simpleperf from adb shell can sample the release build -->
         <profileable android:shell="true" />
 
+        <!-- the app's entry: validates the game and its options, then starts PES5Activity -->
         <activity
-            android:name=".PES5Activity"
+            android:name=".LauncherActivity"
             android:label="@string/app_name"
             android:exported="true"
-            android:screenOrientation="sensorLandscape"
-            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:launchMode="singleInstance">
+            android:screenOrientation="portrait"
+            android:configChanges="keyboardHidden"
+            android:theme="@style/Theme.Launcher">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- the game itself, started only by the launcher -->
+        <activity
+            android:name=".PES5Activity"
+            android:label="@string/app_name"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:launchMode="singleInstance" />
     </application>
 </manifest>

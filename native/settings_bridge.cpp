@@ -1,10 +1,11 @@
 // The settings screen is the phone's own, not the game's: PES5Activity draws it in Java (SettingsDialog.java), so a
 // value is read once when the panel opens and written one at a time as it is changed, across JNI rather than every
-// frame. The gear in native/touch.cpp asks for it through host::ShowSettings.
+// frame. The gear on the on-screen controls (TouchControls.java) opens it. The controls' own JNI is here too.
 #include <jni.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <vector>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_system.h>
@@ -17,9 +18,9 @@ namespace {
 
 // the order the dialog's values are in, the same numbers SettingsDialog.java has
 enum Key : int {
-    kResolution, kAntiAlias, kAniso, kVsync, kFrameSkip, kAspect, kFpsCounter, kHdr, kHdrAvailable, kControlsScale,
-    kControlsOpacity, kOutWidth, kOutHeight, kCameraSensitivity, kCameraMode, kFrameRate, kCameraHeight,
-    kCameraDistance, kKeyCount
+    kResolution, kAntiAlias, kAniso, kVsync, kFrameSkip, kAspect, kFpsCounter, kHdr, kHdrAvailable, kControlsOpacity,
+    kOutWidth, kOutHeight, kCameraSensitivity, kCameraMode, kFrameRate, kCameraHeight,
+    kCameraDistance, kShadowQuality, kKeyCount
 };
 
 // the one index the panel shows for the two settings anti-aliasing is made of: 0 off, 1 SMAA, 2 MSAA 2X, 3 MSAA 4X
@@ -31,15 +32,15 @@ int AntiAliasIndex(const game::Options& o) {
 
 }  // namespace
 
-void host::ShowSettings() {
+void host::ControlsSync(bool pad) {
     JNIEnv* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
     if (!env) return;
     jobject activity = static_cast<jobject>(SDL_GetAndroidActivity());
     if (!activity) return;
     jclass cls = env->GetObjectClass(activity);
     if (!cls) return;
-    jmethodID mid = env->GetMethodID(cls, "showSettings", "()V");
-    if (mid) env->CallVoidMethod(activity, mid);
+    jmethodID mid = env->GetMethodID(cls, "controlsSync", "(Z)V");
+    if (mid) env->CallVoidMethod(activity, mid, jboolean(pad));
     env->DeleteLocalRef(cls);
 }
 
@@ -58,7 +59,6 @@ extern "C" JNIEXPORT jintArray JNICALL Java_com_datfooldive_pes5_PES5Activity_na
     v[kFpsCounter] = o.fps_counter ? 1 : 0;
     v[kHdr] = o.hdr_output ? 1 : 0;
     v[kHdrAvailable] = game::g_hdr_display.load() ? 1 : 0;
-    v[kControlsScale] = jint(o.controls_scale);
     v[kControlsOpacity] = jint(o.controls_opacity);
     v[kOutWidth] = jint(out.width);
     v[kOutHeight] = jint(out.height);
@@ -67,6 +67,7 @@ extern "C" JNIEXPORT jintArray JNICALL Java_com_datfooldive_pes5_PES5Activity_na
     v[kFrameRate] = jint(o.frame_rate);
     v[kCameraHeight] = jint(o.camera_height);
     v[kCameraDistance] = jint(o.camera_distance);
+    v[kShadowQuality] = jint(o.shadow_quality);
     jintArray arr = env->NewIntArray(kKeyCount);
     if (arr) env->SetIntArrayRegion(arr, 0, kKeyCount, v);
     return arr;
@@ -91,13 +92,13 @@ extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_PES5Activity_nativeS
         case kAspect: o.aspect = uint32_t(std::clamp<jint>(value, 0, 3)); break;
         case kFpsCounter: o.fps_counter = value != 0; break;
         case kHdr: o.hdr_output = value != 0 && game::g_hdr_display.load(); break;
-        case kControlsScale: o.controls_scale = uint32_t(std::clamp<jint>(value, 50, 150)); break;
         case kControlsOpacity: o.controls_opacity = uint32_t(std::clamp<jint>(value, 20, 100)); break;
         case kCameraSensitivity: o.camera_sensitivity = uint32_t(std::clamp<jint>(value, 50, 300)); break;
         case kCameraMode: o.camera_mode = uint32_t(std::clamp<jint>(value, 0, 2)); break;
         case kFrameRate: o.frame_rate = uint32_t(std::clamp<jint>(value, 0, 1)); break;
         case kCameraHeight: o.camera_height = uint32_t(std::clamp<jint>(value, 50, 200)); break;
         case kCameraDistance: o.camera_distance = uint32_t(std::clamp<jint>(value, 70, 150)); break;
+        case kShadowQuality: o.shadow_quality = uint32_t(std::clamp<jint>(value, 0, 3)); break;
         default: return;
     }
     if (commit) app::Save();
@@ -116,26 +117,51 @@ extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_PES5Activity_nativeS
     o.aspect = 0;
     o.fps_counter = true;
     o.hdr_output = false;
-    o.controls_scale = 100;
     o.controls_opacity = 100;
     o.camera_sensitivity = game::Options{}.camera_sensitivity;
     o.camera_mode = game::Options{}.camera_mode;
     o.frame_rate = game::Options{}.frame_rate;
     o.camera_height = game::Options{}.camera_height;
     o.camera_distance = game::Options{}.camera_distance;
-    touch::EditReset();
-    app::Save();
+    o.shadow_quality = game::Options{}.shadow_quality;
+    touch::ResetUnits();
 }
 
-// the panel's way into the layout editor: it closes, and a finger moves the controls instead of pressing them
-extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_PES5Activity_nativeEditLayout(JNIEnv*, jclass) {
-    touch::EditBegin();
+// the on-screen controls (TouchControls.java): what the fingers hold, as it changes
+extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_TouchControls_nativeTouchPad(JNIEnv*, jclass, jint buttons,
+                                                                                    jint analog, jfloat lx, jfloat ly,
+                                                                                    jfloat rx, jfloat ry) {
+    touch::Set(uint32_t(buttons), uint32_t(analog), lx, ly, rx, ry);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_PES5Activity_nativeEditEnd(JNIEnv*, jclass) {
-    touch::EditEnd();
+extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_TouchControls_nativeTouchSwipe(JNIEnv*, jclass, jfloat dx,
+                                                                                      jfloat dy) {
+    touch::Swipe(dx, dy);
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_PES5Activity_nativeEditReset(JNIEnv*, jclass) {
-    touch::EditReset();
+// their layout: x, y and size for each control in touch.cpp's Unit order
+extern "C" JNIEXPORT jfloatArray JNICALL Java_com_datfooldive_pes5_TouchControls_nativeControls(JNIEnv* env, jclass) {
+    const int n = touch::Units();
+    std::vector<jfloat> v(size_t(n) * 3);
+    for (int i = 0; i < n; i++) {
+        float x = 0, y = 0, scale = 1;
+        touch::GetUnit(i, x, y, scale);
+        v[size_t(i) * 3] = x;
+        v[size_t(i) * 3 + 1] = y;
+        v[size_t(i) * 3 + 2] = scale;
+    }
+    jfloatArray arr = env->NewFloatArray(jsize(v.size()));
+    if (arr) env->SetFloatArrayRegion(arr, 0, jsize(v.size()), v.data());
+    return arr;
+}
+
+// one control moved or sized in the layout editor; commit writes the file, as a drag or a size bar is let go
+extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_TouchControls_nativeControlSet(JNIEnv*, jclass, jint unit,
+                                                                                      jfloat x, jfloat y,
+                                                                                      jfloat scale, jboolean commit) {
+    touch::SetUnit(unit, x, y, scale, commit);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_datfooldive_pes5_TouchControls_nativeControlsReset(JNIEnv*, jclass) {
+    touch::ResetUnits();
 }
